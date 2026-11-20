@@ -1,0 +1,5 @@
+ROLES=('admin','analyst','viewer')
+GROUPS=('A','B')
+EVENT_KINDS=('exposure','activation')
+STATES=('queued','running','done','failed')
+ACTIONS=('publish_b','keep_a')

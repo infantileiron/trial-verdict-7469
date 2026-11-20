@@ -1,0 +1,1 @@
+export const GROUPS=['A','B'];export const EVENT_KINDS=['exposure','activation'];export const ROLES=['admin','analyst','viewer'];export const STATES=['queued','running','done','failed'];export const ACTIONS={publish_b:'上线 B',keep_a:'保留 A'};

@@ -1,0 +1,4 @@
+-- Application creates this baseline through SQLAlchemy metadata in src/models/entities.py.
+-- Natural keys: users.email, experiments.code, events(experiment_id,user_key,kind).
+-- Foreign keys connect events and decisions to experiment definitions.
+-- Decisions.snapshot stores the frozen experimental protocol and event set.
