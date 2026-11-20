@@ -1,4 +1,9 @@
--- Application creates this baseline through SQLAlchemy metadata in src/models/entities.py.
--- Natural keys: users.email, experiments.code, events(experiment_id,user_key,kind).
--- Foreign keys connect events and decisions to experiment definitions.
--- Decisions.snapshot stores the frozen experimental protocol and event set.
+-- 基线结构由应用通过 SQLAlchemy metadata 在 src/models/entities.py 创建。
+-- 自然键：users.email、experiments.code、events(experiment_id,user_key,kind)、
+-- enterprises.key、enterprise_members.user_key（成员唯一归属企业）、
+-- enterprise_assignments(experiment_id,enterprise_id)（企业在实验内组别唯一锁定）。
+-- 002 增量（见 src/config/migrations.py，幂等 additive）：
+--   experiments 增列 unit（user/enterprise），历史实验回填 user；
+--   events 增列 enterprise_id（个人实验为空，企业实验带冻结企业）；
+--   新表 enterprises / enterprise_members / enterprise_assignments。
+-- 裁决 decisions.snapshot 冻结实验协议、事件、企业、成员与组别锁定。

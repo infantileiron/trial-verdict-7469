@@ -6,9 +6,11 @@ from src.config.database import Base,engine
 from src.models import entities
 from src.routes.api import router
 from src.middlewares.request import RequestId,SecurityHeaders
+from src.config.migrations import run_migrations
 @asynccontextmanager
 async def lifespan(app):
  Base.metadata.create_all(engine)
+ run_migrations(engine)
  if os.getenv('SEED_DEMO')=='true':
   try:
    from scripts.seed_demo import seed

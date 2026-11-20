@@ -1,23 +1,27 @@
 # 试用激活实验裁决 · Trial Verdict
 
-棱镜协作软件增长小组的实验工作簿：固定协议、核对试用事件、后台检验、负责人裁决，避免只看转化率就提前发布。
+棱镜协作软件增长小组的实验工作簿：固定协议、核对试用事件、后台检验、负责人裁决，避免只看转化率就提前发布。v2 起支持**企业整群随机**，解决企业客户多人协作时按个人检验会夸大试用效果的问题。
 
 ## 业务场景
 
 棱镜是一家80人协作软件团队，增长组5人每周评估首次引导。上游产品事件过去由分析员导出到 `trial-events-1115.csv`，在工作簿去重并算A/B转化率，再在群聊申请上线。三个痛点：用户跨组和重复事件不易发现、观察期尚未结束就取结果、分流异常和发布理由未留档。本项目替代事件核对到产品裁决一段，下游由产品负责人使用冻结证据决定上线；采用模拟数据，不连接真实产品采集或发布服务。
 
+企业客户按团队采购、多人共用一个工作区，成员行为高度相关。若仍按个人随机并把每个成员当独立样本，会把同一家企业内相关的成员重复计数，标准误被人为缩小、显著性被夸大。因此新实验以**企业为随机化与分析的独立单位（整群随机 / cluster randomization）**；历史个人随机实验保留原口径。
+
 ## 业务模块
 
-1. **实验档案**：实验编号、假设、带时区观察期、预期A组占比；没有事件时可修订协议API，有事件后禁止事后改写。
-2. **事件核对**：曝光/激活，按实验+用户+类型去重，禁止同用户跨组、未来事件、超观察期及先激活后曝光。
-3. **实验裁决**：Redis队列由Python worker真算比例z检验、SRM卡方、绝对提升及95%区间，保留协议与全部输入快照。
-4. **发布记录**：分析员填写业务理由，管理员签核上线B或保留A。未到期、SRM异常、小样本禁止发布；上线B还需正向显著提升。已发布裁决不可覆盖。
+1. **实验档案**：实验编号、假设、带时区观察期、预期A组占比、随机化单位（个人 `user` / 企业 `enterprise`）；没有事件时可修订协议API，有事件后禁止事后改写。
+2. **企业分组（企业实验）**：登记企业与成员，成员唯一归属一家企业；企业组别按 `sha256(实验编号|开始时间|企业键)` 确定性映射，**该企业首个曝光入库时在事务内锁定**，之后跨组事件一律 409 拒收；并发首曝由唯一约束收敛、服务端幂等重试，只产生一条锁定。
+3. **事件核对**：曝光/激活，按实验+用户+类型去重。个人实验禁止同用户跨组；企业实验经成员解析企业、组别取自企业锁定值，未归属企业或先激活后曝光均拒收。
+4. **实验裁决**：Redis队列由Python worker真算。个人实验为双比例z检验；企业实验为簇稳健估计（见下）。保留协议、企业归属、成员、锁定与全部输入快照。
+5. **发布记录**：分析员填写业务理由，管理员签核上线B或保留A。未到期、SRM异常、小样本（企业实验每臂不足5家企业）禁止发布；上线B还需正向显著。已发布裁决不可覆盖。
+6. **覆盖与阻因**：页面可核对企业覆盖（每臂企业/成员/曝光/激活、首曝锁定证据）、分析依据（算法版本、校验和、效应与区间）与上线阻因。
 
 | 角色 | 页面 | 权限与动作 |
 |---|---|---|
 | admin | 全部、审计API | 编辑业务、执行检验、签核发布 |
-| analyst | 四业务页 | 录入事件、建实验、提交检验、起草理由；不能发布 |
-| viewer | 四业务页 | 只读、下载已有证据；服务端阻止一切写入/计算 |
+| analyst | 六业务页 | 登记企业/成员、录入事件、建实验、提交检验、起草理由；不能发布 |
+| viewer | 六业务页 | 只读、下载已有证据；服务端阻止一切写入/计算 |
 
 演示账号 `admin@demo.local` / `analyst@demo.local` / `viewer@demo.local`，密码均为 `Demo123!`。JWT有效8小时，生产应更换JWT_SECRET与数据库密码。
 
@@ -32,9 +36,30 @@
 - 置信区间以百分点展示。p值后台保留完整精度，前端小值科学计数。相对提升只在pA>0时提供。结果有SHA256校验和与算法版本`two-proportion-srm-1.0`。
 - 发布时重新检查冻结协议的结束时间与原快照门禁，后加样本不会改变旧结果。新数据须新建裁决。观察期按UTC存储、界面按上海时区展示，不使用反复偷看校正/多重检验，业务负责人应使用预先定义的单次检验。
 
+### 企业整群随机口径（`cluster-rate-robust-1.0`）
+
+随机化与分析单位都是**企业**：同一企业的全部成员只能进同一组，企业在首次曝光时锁定组别，成员不独立计数。估计目标仍是**整体人均激活率**，但方差在企业层面估计。
+
+- 按企业聚合：每家曝光企业 j 有成员数 n_j、激活数 x_j、企业激活率 r_j=x_j/n_j；臂内整体人均率为成员加权 `p_g=Σx_j/Σn_j`，差异 Δ=pB−pA。
+- **簇稳健（夹心）方差**，天然容纳企业大小悬殊：臂方差 `V_g = k_g/(k_g−1)·Σ_j [(n_j/N_g)(r_j−p_g)]²`，总标准误 `SE=√(V_A+V_B)`。企业内成员相关不再被当作独立样本，避免虚高效应。
+- **95% 区间用 t 而非正态**：自由度按 Welch–Satterthwaite 在簇层面估计，企业数量少时区间自动收宽；临界值由自带 t 分布二分求解。
+- **企业组别置换检验**：在企业（而非成员）层面重排 A/B 标签。组合数 ≤2 万时枚举全部组合给精确 p，否则用固定种子做 1 万次蒙特卡洛（结果可复算）。
+- **簇级 SRM**：以企业计数对预期分流比例做 χ²（df=1），p<0.01 判分流异常；同时给出 ICC（单因素 ANOVA，负值截断为 0 并保留原值）与企业规模 min/mean/max 供核对。
+- 结果含 SHA256 校验和、算法版本与方法说明，与个人实验同样冻结快照、发布前复算。
+
+### 企业实验的门禁与适用条件
+
+- 每组曝光企业 **< 2 家：任务直接失败**（无法估计臂方差）；每组 **< 5 家：可计算但禁止发布**，页面与导出明确列为阻因，避免企业数量过少造成虚假显著。
+- 未到观察期、企业级 SRM p<0.01、簇间方差不可识别（SE=0）均禁止发布。
+- 上线 B 需同时满足：Δ>0、簇稳健 t 双侧 p<0.05、置换 p<0.05、95% 区间下界 >0；任一不满足即「证据不足拒绝上线」。保留 A 同样要求门禁通过，且不宣称两版本等效。
+- **适用条件**：干预按企业交付、同企业成员存在相关（ICC>0）、企业是独立抽样单位；企业数量应尽量多且两组规模均衡。企业极少（如每臂个位数）时即使成员很多，功效也由企业数决定，应延长观察或增加企业而非堆成员。本方法是有限样本近似，不替代分层随机或协变量调整等更强设计。
+- 个人随机实验继续走 `two-proportion-srm-1.0`，两套口径由实验协议的 `unit` 字段分派，互不影响。
+
 ## seed与一天剧本
 
 固定自然键：成熟实验 `LJ-1115-A`，1200名用户各600人/组，A激活120人、B激活180人；1500条曝光/激活事件。`LJ-1115-B`为尚未到期实验。时间相对首次seed当日生成，已存在协议、事件、用户不覆盖。重复seed不会增加重复记录，也不覆盖修改。
+
+企业演示实验 `LJ-ENT-A`：12 家企业按哈希恰好 6/6 分入 A/B，企业规模 3~120 人体现大小悬殊，A 基线激活约 24%、B 约 42%，观察期已结束、门禁全部通过，可直接走「提交裁决→填理由→签核上线B」。企业、成员归属、首曝锁定与企业事件一并幂等写入。
 
 1. 08:50 viewer核对首次引导协议，确认A分流50%。
 2. 09:00 analyst查看1200名用户的1500条事件，核对`LJ-U0001`。
@@ -44,6 +69,9 @@
 6. 09:40 对照区间和样本量，填写上线收益、成本与采集核对依据。
 7. 10:00 admin签核上线B；未到期或分流异常实验会被409阻断。
 8. 10:10 viewer下载 `trial-verdict-<id>.json`，产品负责人留存。发布记录只在本项目落库，不调用外部发布服务。
+9. 10:30 切到 `LJ-ENT-A` 企业实验：在「企业分组」核对 12 家企业与成员归属，在「覆盖与阻因」核对每臂 6 家企业、首曝锁定时间与组别。
+10. 10:40 提交企业裁决，查看簇稳健 t 区间、置换 p、ICC 与企业规模；尝试给企业事件伪造跨组别会被 409 拒收。
+11. 10:50 admin 对证据充分的企业实验签核；对每臂不足 5 家企业的实验，发布按钮被服务端阻断并显示阻因。
 
 ## 快速启动
 
@@ -62,20 +90,20 @@ docker compose exec -T backend python -m scripts.seed_demo
 | 层 | 实现 |
 |---|---|
 | 前端 | 原生HTML/CSS/ES modules、Nginx，Google Fonts Noto Sans SC + ZCOOL XiaoWei |
-| 后端 | Python 3.11 / FastAPI / SQLAlchemy / PyJWT / SciPy |
-| 任务 | Redis持久队列 + 独立Python worker，启动回收queued/running任务 |
-| 存储 | MySQL8.0，实验/事件/裁决/用户/审计；数据库、Redis、产物三命名卷 |
+| 后端 | Python 3.11 / FastAPI / SQLAlchemy / PyJWT；统计分布纯标准库自实现（无 SciPy 依赖） |
+| 任务 | Redis持久队列 + 独立Python worker，启动回收queued/running任务，失败任务可按原快照重试 |
+| 存储 | MySQL8.0，实验/事件/企业/成员/企业锁定/裁决/用户/审计；数据库、Redis、产物三命名卷 |
 
-`frontend/src` 按api/stores/types/components/hooks/pages/router/utils/constants拆分；`backend/src` 按routes/controllers/services/models/schemas/middlewares/utils/constants/config拆分；`backend/scripts/seed_demo.py`；`backend/migrations`记录初始元数据约束。schema由SQLAlchemy metadata初始化。所有计算/校验/持久化均在Python。
+`frontend/src` 按api/stores/types/components/hooks/pages/router/utils/constants拆分，六个页面在 `pages/`（实验档案、企业分组、事件核对、实验裁决、发布记录、覆盖与阻因）；`backend/src` 按routes/controllers/services/models/schemas/middlewares/utils/constants/config拆分，其中 `services/randomization.py` 为确定性哈希分组、`services/grouping.py` 为首曝锁定、`services/analysis.py` 分派个人/企业两套算法、`utils/stats_util.py` 为纯标准库分布函数、`config/migrations.py` 为幂等增量迁移；`backend/scripts/seed_demo.py`；`backend/migrations`记录初始元数据约束。schema由SQLAlchemy metadata初始化，旧卷由迁移补列并把历史实验回填 `unit=user`。所有计算/校验/持久化均在Python。
 
-共享枚举：后端 `backend/src/constants/enums.py`，前端 `frontend/src/constants/enums.js`，含角色admin/analyst/viewer、组别A/B、事件exposure/activation、任务queued/running/done/failed、裁决publish_b/keep_a；schema的Literal校验和页面选择器使用同组值。
+共享枚举：后端 `backend/src/constants/enums.py`，前端 `frontend/src/constants/enums.js`，含角色admin/analyst/viewer、组别A/B、事件exposure/activation、任务queued/running/done/failed、裁决publish_b/keep_a、随机化单位user/enterprise；schema的Literal校验和页面选择器使用同组值。
 
-本地开发：后端安装 `backend/requirements.lock`（完整固定版本），设置DATABASE_URL、REDIS_URL、JWT_SECRET后在backend运行`uvicorn src.main:app --reload --port 8000`；另开`python -m src.worker`。前端可用本项目Nginx容器代理该后端，所有请求统一`/api/`剥前缀。常用API为 `/auth/login`、`/experiments`、`/events`、`/decisions`、`/decisions/{id}/rationale`、`/decisions/{id}/publish`、`/decisions/{id}/export`。
+本地开发：后端安装 `backend/requirements.lock`（完整固定版本），设置DATABASE_URL、REDIS_URL、JWT_SECRET后在backend运行`uvicorn src.main:app --reload --port 8000`；另开`python -m src.worker`。前端可用本项目Nginx容器代理该后端，所有请求统一`/api/`剥前缀。常用API为 `/auth/login`、`/experiments`、`/experiments/{id}/coverage`、`/enterprises`、`/enterprises/members`、`/events`、`/decisions`、`/decisions/{id}/retry`、`/decisions/{id}/rationale`、`/decisions/{id}/publish`、`/decisions/{id}/export`。
 
 环境变量见`.env.example`：COMPOSE_PROJECT_NAME、三宿主端口、DB_PASSWORD、JWT_SECRET、SEED_DEMO、NETWORK_SUBNET；内部DATABASE_URL与REDIS_URL由Compose设置。默认显式子网10.253.104.0/24用于避开本机地址池耗尽，迁移时可修改。5服务都有健康检查，MySQL通过TCP SELECT1验证应用用户，worker用20秒心跳；后端健康检查同时查数据库和Redis。审计记录操作者/动作/UTC时间；请求ID、安全响应头与全局错误恢复构成横切处理。
 
 ## 已知差异
 
-小型范围提供逐条事件录入与API，不含CSV批量导入、自动随机分流、外部产品埋点、通知和真实上线控制；事件列表最多显示最近80条但计算使用全部记录。实验协议修订只提供API且仅限无事件时。原始事件采用追加留痕，不提供覆盖删除。前端字体网络不可用时退回字体类别。这里的显著结果仅是固定样本的大样本近似，不替代业务成本审查。
+小型范围提供逐条事件录入与API，不含CSV批量导入、外部产品埋点、通知和真实上线控制；事件列表最多显示最近80条但计算使用全部记录。企业整群随机的哈希分组与首曝锁定已内置，但企业/成员仍通过页面或API登记，不接外部组织目录。实验协议修订只提供API且仅限无事件时。原始事件采用追加留痕，不提供覆盖删除；成员归属冻结期间不可改挂。前端字体网络不可用时退回字体类别。企业实验的簇稳健区间是有限样本近似、置换检验在大样本时为固定种子蒙特卡洛，不替代分层随机或协变量调整；这里的显著结果仅是固定样本的近似结论，不替代业务成本审查。
 
 MIT License，见LICENSE。真实验收、测试脚本、截图位于源码目录外 `../../test-artifacts/gb-3104/`。

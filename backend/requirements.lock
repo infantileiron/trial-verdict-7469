@@ -7,7 +7,6 @@ fastapi==0.115.6
 greenlet==3.5.6
 h11==0.16.0
 idna==3.20
-numpy==2.2.6
 packaging==26.3
 pycparser==3.12
 pydantic==2.14.3
@@ -15,7 +14,6 @@ pydantic_core==2.50.4
 PyJWT==2.10.1
 PyMySQL==1.1.1
 redis==5.2.1
-scipy==1.14.1
 SQLAlchemy==2.0.36
 starlette==0.41.3
 typing-inspection==0.4.5
